@@ -12,18 +12,64 @@ fn main() {
         .add_plugins(RapierDebugRenderPlugin::default())
         // A debug plugin that allows us to view the components attached to each entity
         .add_plugins(WorldInspectorPlugin::default())
+        // Set the strength of our gravity
+        .insert_resource(RapierConfiguration {
+            gravity: Vec2::NEG_Y * 1000.0,
+            ..default()
+        })
         // Add our `setup` system to the Startup stage, so that it runs one time when the app
         // starts up
         .add_systems(Startup, setup)
         // Add the rest of our systems to the Update stage so that they run every tick/frame that
         // the application is running
-        .add_systems(Update, (move_player, move_camera, add_gravity))
+        .add_systems(
+            Update,
+            (move_player, move_camera, handle_ground_sensor, jump),
+        )
         .run();
 }
 
 // A marker component so that we can query the player entity
 #[derive(Component)]
 pub struct Player;
+
+// A marker component so that we can query the rock entity
+#[derive(Component)]
+pub struct Rock;
+
+#[derive(Component, Default)]
+pub struct Jumper {
+    jump_force: f32,
+    double_jump_available: bool,
+}
+
+impl Jumper {
+    pub fn land(&mut self) {
+        self.double_jump_available = true;
+    }
+
+    pub fn jump_force(&self) -> f32 {
+        self.jump_force
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Default)]
+pub enum GroundedState {
+    Grounded,
+    #[default]
+    Airborne,
+}
+
+#[derive(Component, Default)]
+pub struct GroundSensor {
+    state: GroundedState,
+}
+
+impl GroundSensor {
+    pub fn grounded(&self) -> bool {
+        self.state == GroundedState::Grounded
+    }
+}
 
 // A marker component so that we can query the
 #[derive(Component)]
@@ -63,7 +109,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     let starting_translation = Vec3::new(-150.0, -120.0, 0.0);
 
     // Instead of copy pasting the platform spawn a bunch we just use a for loop here
-    for i in 0..5 {
+    for i in 0..50 {
         commands.spawn((
             SpriteBundle {
                 // Load the block sprite from out ./assets folder
@@ -87,26 +133,77 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         ));
     }
 
-    // Spawn our guy
     commands.spawn((
         SpriteBundle {
-            // load the player sprite from the ./assets folder
-            texture: asset_server.load("tower_guy.png"),
+            // Load the block sprite from out ./assets folder
+            texture: asset_server.load("Block_basic.png"),
             sprite: Sprite {
-                custom_size: Some(Vec2::new(100., 100.)),
+                // Set the sprite to be displayed at 100x100 pixels instead of it's native
+                // resolution
+                custom_size: Some(Vec2::new(500., 100.)),
                 ..default()
             },
+            // Set the position for the block
+            transform: Transform::from_translation(Vec3::new(-1000.0, -100.0, 0.0))
+                .with_rotation(Quat::from_axis_angle(Vec3::Z, 30.0_f32.to_degrees())),
             ..default()
         },
-        Player,
-        // Give the player a rigid body that can be moved
-        RigidBody::KinematicPositionBased,
-        Collider::ball(25.0),
-        // Give the character a character controller so it can be moved more easily and detect
-        // whether it's on the ground or not
-        KinematicCharacterController::default(),
-        // A component to move the player downward every frame that it's off the ground
-        Gravity::default(),
+        // Give the block a collider so that it can be stood on
+        Collider::cuboid(250.0, 50.0),
+        // Give the block a fixed rigid body, meaning it won't move but can be collided with
+        RigidBody::Fixed,
+        Name::from("Ramp"),
+    ));
+
+    // Spawn our guy
+    let player_entity = commands
+        .spawn((
+            SpriteBundle {
+                // load the player sprite from the ./assets folder
+                texture: asset_server.load("tower_guy.png"),
+                sprite: Sprite {
+                    custom_size: Some(Vec2::new(100., 100.)),
+                    ..default()
+                },
+                transform: Transform::from_translation(Vec3::Y * 50.0),
+                ..default()
+            },
+            Player,
+            // Give the player a rigid body that can be moved
+            RigidBody::Dynamic,
+            Collider::capsule_y(30.0, 25.0),
+            Velocity::default(),
+            LockedAxes::ROTATION_LOCKED,
+            Jumper {
+                jump_force: 550.0,
+                ..default()
+            },
+            GroundSensor::default(),
+            Name::from("Player"),
+        ))
+        .id();
+
+    let joint = RopeJointBuilder::new()
+        .local_anchor1(Vec2::default())
+        .local_anchor2(Vec2::default())
+        .limits([0.0, 200.0]);
+
+    commands.spawn((
+        SpriteBundle {
+            texture: asset_server.load("rock.png"),
+            sprite: Sprite {
+                custom_size: Some(Vec2::new(150., 150.)),
+                ..default()
+            },
+            transform: Transform::from_translation(Vec3::new(200.0, 50.0, 0.0)),
+            ..default()
+        },
+        Rock,
+        RigidBody::Dynamic,
+        Collider::ball(75.0),
+        Velocity::default(),
+        ImpulseJoint::new(player_entity, joint),
+        Name::from("Rock"),
     ));
 }
 
@@ -115,33 +212,53 @@ fn move_player(
     input: Res<Input<KeyCode>>,
     // The time resource so we can smooth our movement out, regardless of the frame rate
     time: Res<Time>,
-    // Querying for the (Character Controller component, sprite component, gravity component) of
+    // Querying for the (External Force component, sprite component, gravity component) of
     // every entity with a (Player component)
-    mut player_query: Query<
-        (&mut KinematicCharacterController, &mut Sprite, &Gravity),
-        With<Player>,
-    >,
+    mut player_query: Query<(&mut Velocity, &mut Sprite), With<Player>>,
 ) {
     // Loop over the components of each entity we found with our query
-    for (mut controller, mut sprite, gravity) in &mut player_query {
+    for (mut velocity, mut sprite) in &mut player_query {
         // create an x_speed variable to determine our horizontal movement
         let mut x_speed = 0.0;
         // Set our x_speed to move us to the right or left depending on which key is pressed, as
         // well as flip our sprite to face that direction
         if input.pressed(KeyCode::D) {
-            x_speed = 100.0 * time.delta_seconds();
+            x_speed = 1000.0 * time.delta_seconds();
             sprite.flip_x = false;
         }
         if input.pressed(KeyCode::A) {
-            x_speed = -100.0 * time.delta_seconds();
+            x_speed = -1000.0 * time.delta_seconds();
             sprite.flip_x = true;
         }
 
-        let movement_vector = Vec2::X * x_speed;
-        // add our gravity to the speed value we are going to use to move our character
-        let gravity_vector = Vec2::NEG_Y * gravity.get();
-        // Apply that vector to our character controller
-        controller.translation = Some(movement_vector + gravity_vector);
+        //Add to the players velocity on the x-axis
+        velocity.linvel += Vec2::X * x_speed;
+    }
+}
+
+fn handle_ground_sensor(
+    rapier_context: Res<RapierContext>,
+    mut query: Query<(Entity, &mut GroundSensor, &Transform)>,
+) {
+    for (entity, mut ground_sensor, transform) in &mut query {
+        let origin = transform.translation.xy();
+        let dir = Vec2::NEG_Y;
+        let distance = 100.0;
+        let filter = QueryFilter::default().exclude_collider(entity);
+
+        if let Some(_) = rapier_context.cast_ray(origin, dir, distance, true, filter) {
+            ground_sensor.state = GroundedState::Grounded;
+        } else {
+            ground_sensor.state = GroundedState::Airborne;
+        }
+    }
+}
+
+fn jump(input: Res<Input<KeyCode>>, mut query: Query<(&mut Velocity, &GroundSensor, &Jumper)>) {
+    for (mut velocity, ground_sensor, jumper) in &mut query {
+        if input.just_pressed(KeyCode::Space) && ground_sensor.grounded() {
+            velocity.linvel.y += jumper.jump_force();
+        }
     }
 }
 
@@ -155,24 +272,5 @@ fn move_camera(
     let mut camera_transform = camera_query.single_mut();
     let player_transform = player_query.single();
     // Set the cameras x position to match the player
-    camera_transform.translation.x = player_transform.translation.x;
-}
-
-fn add_gravity(
-    // Grab the time resource to apply gravity evenly
-    time: Res<Time>,
-    // Grab the (Gravity component, Character controller output) of any entity that has all of
-    // those components
-    mut controller_query: Query<(&mut Gravity, &KinematicCharacterControllerOutput)>,
-) {
-    for (mut gravity, output) in &mut controller_query {
-        // If we are on the ground
-        if output.grounded {
-            // Reset our gravity value to 0.0
-            gravity.reset();
-        } else {
-            // if we are in the air add to our gravity value
-            gravity.add(5.0 * time.delta_seconds());
-        }
-    }
+    camera_transform.translation = player_transform.translation;
 }
