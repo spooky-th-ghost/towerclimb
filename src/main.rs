@@ -17,6 +17,8 @@ fn main() {
             gravity: Vec2::NEG_Y * 1000.0,
             ..default()
         })
+        .register_type::<Kick>()
+        .register_type::<Jump>()
         // Add our `setup` system to the Startup stage, so that it runs one time when the app
         // starts up
         .add_systems(Startup, setup)
@@ -37,13 +39,20 @@ pub struct Player;
 #[derive(Component)]
 pub struct Rock;
 
-#[derive(Component, Default)]
-pub struct Jumper {
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
+pub struct Kick {
+    kick_strength: f32,
+}
+
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
+pub struct Jump {
     jump_force: f32,
     double_jump_available: bool,
 }
 
-impl Jumper {
+impl Jump {
     pub fn land(&mut self) {
         self.double_jump_available = true;
     }
@@ -174,7 +183,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             Collider::capsule_y(30.0, 25.0),
             Velocity::default(),
             LockedAxes::ROTATION_LOCKED,
-            Jumper {
+            Jump {
                 jump_force: 550.0,
                 ..default()
             },
@@ -254,7 +263,7 @@ fn handle_ground_sensor(
     }
 }
 
-fn jump(input: Res<Input<KeyCode>>, mut query: Query<(&mut Velocity, &GroundSensor, &Jumper)>) {
+fn jump(input: Res<Input<KeyCode>>, mut query: Query<(&mut Velocity, &GroundSensor, &Jump)>) {
     for (mut velocity, ground_sensor, jumper) in &mut query {
         if input.just_pressed(KeyCode::Space) && ground_sensor.grounded() {
             velocity.linvel.y += jumper.jump_force();
