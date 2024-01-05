@@ -140,8 +140,6 @@ fn move_player(
         let movement_vector = Vec2::X * x_speed;
         // add our gravity to the speed value we are going to use to move our character
         let gravity_vector = Vec2::NEG_Y * gravity.get();
-        println!("gravity value:{}", gravity.get());
-
         // Apply that vector to our character controller
         controller.translation = Some(movement_vector + gravity_vector);
     }
