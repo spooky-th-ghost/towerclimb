@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
-use bevy_rapier2d::prelude::*;
+use bevy_rapier2d::{na::distance_squared, prelude::*};
 
 fn main() {
     App::new()
@@ -17,6 +17,7 @@ fn main() {
             gravity: Vec2::NEG_Y * 1000.0,
             ..default()
         })
+        .add_event::<KickEvent>()
         .register_type::<Kick>()
         .register_type::<Jump>()
         // Add our `setup` system to the Startup stage, so that it runs one time when the app
@@ -26,9 +27,37 @@ fn main() {
         // the application is running
         .add_systems(
             Update,
-            (move_player, move_camera, handle_ground_sensor, jump),
+            (
+                move_player,
+                move_camera,
+                handle_ground_sensor,
+                jump,
+                kick,
+                handle_kicks,
+            ),
         )
         .run();
+}
+
+#[derive(Resource)]
+pub struct PlayerData {
+    pub player_entity: Entity,
+    pub rock_entity: Entity,
+}
+
+impl PlayerData {
+    pub fn new(player_entity: Entity, rock_entity: Entity) -> Self {
+        PlayerData {
+            player_entity,
+            rock_entity,
+        }
+    }
+}
+
+#[derive(Event)]
+pub struct KickEvent {
+    origin: Vec2,
+    force: f32,
 }
 
 // A marker component so that we can query the player entity
@@ -45,6 +74,12 @@ pub struct Kick {
     kick_strength: f32,
 }
 
+impl Kick {
+    pub fn new(kick_strength: f32) -> Self {
+        Kick { kick_strength }
+    }
+}
+
 #[derive(Component, Default, Reflect)]
 #[reflect(Component)]
 pub struct Jump {
@@ -53,6 +88,12 @@ pub struct Jump {
 }
 
 impl Jump {
+    pub fn new(jump_force: f32) -> Self {
+        Jump {
+            jump_force,
+            double_jump_available: true,
+        }
+    }
     pub fn land(&mut self) {
         self.double_jump_available = true;
     }
@@ -117,6 +158,23 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     // Starting position for the platforms
     let starting_translation = Vec3::new(-150.0, -120.0, 0.0);
 
+    // 0  Ground
+    // 1 Player
+    // 2 Rock
+    //
+    // 0, [1,2]
+    // 1, [0,2]
+    //
+
+    let terrain_group = Group::GROUP_1;
+    let terrain_filter = Group::GROUP_1 | Group::GROUP_2 | Group::GROUP_3;
+
+    let player_group = Group::GROUP_2;
+    let player_filter = Group::GROUP_1 | Group::GROUP_3;
+
+    let rock_group = Group::GROUP_3;
+    let rock_filter = Group::GROUP_1 | Group::GROUP_2;
+
     // Instead of copy pasting the platform spawn a bunch we just use a for loop here
     for i in 0..50 {
         commands.spawn((
@@ -135,6 +193,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
                 ),
                 ..default()
             },
+            CollisionGroups::new(terrain_group, terrain_filter),
             // Give the block a collider so that it can be stood on
             Collider::cuboid(50.0, 50.0),
             // Give the block a fixed rigid body, meaning it won't move but can be collided with
@@ -161,6 +220,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         Collider::cuboid(250.0, 50.0),
         // Give the block a fixed rigid body, meaning it won't move but can be collided with
         RigidBody::Fixed,
+        CollisionGroups::new(terrain_group, terrain_filter),
         Name::from("Ramp"),
     ));
 
@@ -183,11 +243,10 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             Collider::capsule_y(30.0, 25.0),
             Velocity::default(),
             LockedAxes::ROTATION_LOCKED,
-            Jump {
-                jump_force: 550.0,
-                ..default()
-            },
+            Jump::new(550.0),
+            Kick::new(1000.0),
             GroundSensor::default(),
+            CollisionGroups::new(player_group, player_filter),
             Name::from("Player"),
         ))
         .id();
@@ -197,23 +256,28 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         .local_anchor2(Vec2::default())
         .limits([0.0, 200.0]);
 
-    commands.spawn((
-        SpriteBundle {
-            texture: asset_server.load("rock.png"),
-            sprite: Sprite {
-                custom_size: Some(Vec2::new(150., 150.)),
+    let rock_entity = commands
+        .spawn((
+            SpriteBundle {
+                texture: asset_server.load("rock.png"),
+                sprite: Sprite {
+                    custom_size: Some(Vec2::new(150., 150.)),
+                    ..default()
+                },
+                transform: Transform::from_translation(Vec3::new(200.0, 50.0, 0.0)),
                 ..default()
             },
-            transform: Transform::from_translation(Vec3::new(200.0, 50.0, 0.0)),
-            ..default()
-        },
-        Rock,
-        RigidBody::Dynamic,
-        Collider::ball(75.0),
-        Velocity::default(),
-        ImpulseJoint::new(player_entity, joint),
-        Name::from("Rock"),
-    ));
+            Rock,
+            RigidBody::Dynamic,
+            Collider::ball(75.0),
+            Velocity::default(),
+            ImpulseJoint::new(player_entity, joint),
+            CollisionGroups::new(rock_group, rock_filter),
+            Name::from("Rock"),
+        ))
+        .id();
+
+    commands.insert_resource(PlayerData::new(player_entity, rock_entity));
 }
 
 fn move_player(
@@ -267,6 +331,54 @@ fn jump(input: Res<Input<KeyCode>>, mut query: Query<(&mut Velocity, &GroundSens
     for (mut velocity, ground_sensor, jumper) in &mut query {
         if input.just_pressed(KeyCode::Space) && ground_sensor.grounded() {
             velocity.linvel.y += jumper.jump_force();
+        }
+    }
+}
+
+fn kick(
+    rapier_context: Res<RapierContext>,
+    mut kick_event: EventWriter<KickEvent>,
+    input: Res<Input<KeyCode>>,
+    query: Query<(&Transform, &Kick), With<Player>>,
+) {
+    for (transform, kick) in &query {
+        let origin = transform.translation.xy();
+        let distance = 1000.0;
+        let collision_groups = CollisionGroups {
+            memberships: Group::GROUP_2,
+            filters: Group::GROUP_3,
+        };
+        let filter = QueryFilter {
+            groups: Some(collision_groups),
+            ..default()
+        };
+
+        if rapier_context
+            .cast_ray(origin, Vec2::X, distance, true, QueryFilter::default())
+            .is_some()
+            && rapier_context
+                .cast_ray(origin, Vec2::NEG_X, distance, true, QueryFilter::default())
+                .is_some()
+            && input.just_pressed(KeyCode::E)
+        {
+            kick_event.send(KickEvent {
+                origin: transform.translation.xy(),
+                force: kick.kick_strength,
+            });
+        }
+    }
+}
+
+fn handle_kicks(
+    mut kick_event: EventReader<KickEvent>,
+    mut query: Query<(&mut Velocity, &Transform), With<Rock>>,
+) {
+    for (mut velocity, transform) in &mut query {
+        for kick in kick_event.read() {
+            let kick_direction = transform.translation.xy() - kick.origin;
+            let kick_force = kick_direction.normalize_or_zero() * kick.force;
+
+            velocity.linvel += kick_force;
         }
     }
 }
