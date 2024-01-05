@@ -313,15 +313,22 @@ fn handle_ground_sensor(
     rapier_context: Res<RapierContext>,
     mut query: Query<(Entity, &mut GroundSensor, &Transform)>,
 ) {
+    // For every component that has a `GroundSensor`
     for (entity, mut ground_sensor, transform) in &mut query {
+        // set the start of the raycast
         let origin = transform.translation.xy();
+        // send it straight down because we are trying to detect the ground
         let dir = Vec2::NEG_Y;
+        // cast for 1000 pixels
         let distance = 100.0;
+        // Do not collide with the entity that is making this raycast
         let filter = QueryFilter::default().exclude_collider(entity);
 
         if let Some(_) = rapier_context.cast_ray(origin, dir, distance, true, filter) {
+            // If we've hit ground, set our state to grounded
             ground_sensor.state = GroundedState::Grounded;
         } else {
+            // If we haven't hit ground, set us to airborne
             ground_sensor.state = GroundedState::Airborne;
         }
     }
@@ -329,7 +336,9 @@ fn handle_ground_sensor(
 
 fn jump(input: Res<Input<KeyCode>>, mut query: Query<(&mut Velocity, &GroundSensor, &Jump)>) {
     for (mut velocity, ground_sensor, jumper) in &mut query {
+        // If the player is on solid ground and the space key was just pressed
         if input.just_pressed(KeyCode::Space) && ground_sensor.grounded() {
+            // Add our jump force to our Y velocity
             velocity.linvel.y += jumper.jump_force();
         }
     }
@@ -342,8 +351,11 @@ fn kick(
     query: Query<(&Transform, &Kick), With<Player>>,
 ) {
     for (transform, kick) in &query {
+        // Where our raycast starts from
         let origin = transform.translation.xy();
+        // How far the raycast travels
         let distance = 1000.0;
+        // Collision group stuff
         let collision_groups = CollisionGroups {
             memberships: Group::GROUP_2,
             filters: Group::GROUP_3,
@@ -353,14 +365,19 @@ fn kick(
             ..default()
         };
 
+        // Send one ray to the right
         if rapier_context
             .cast_ray(origin, Vec2::X, distance, true, QueryFilter::default())
             .is_some()
+            // Send another ray to the left
             && rapier_context
                 .cast_ray(origin, Vec2::NEG_X, distance, true, QueryFilter::default())
                 .is_some()
+            // Check if the E key was pressed this frame
             && input.just_pressed(KeyCode::E)
         {
+            // Send a kick event, with the origin as the players position and the force comes from
+            // the players `Kick` component
             kick_event.send(KickEvent {
                 origin: transform.translation.xy(),
                 force: kick.kick_strength,
@@ -370,14 +387,23 @@ fn kick(
 }
 
 fn handle_kicks(
+    // Enables us to read kick events
     mut kick_event: EventReader<KickEvent>,
+    // Query for the rock
     mut query: Query<(&mut Velocity, &Transform), With<Rock>>,
 ) {
+    // Loop through our query to find the rock
+    // in the future we will probably react to the kick event with different objects as well
     for (mut velocity, transform) in &mut query {
+        // for each entity we find, read any kick events
         for kick in kick_event.read() {
+            // Get the direction that the kick should send the rock by subtracking the origin of
+            // the kick from the rocks position
             let kick_direction = transform.translation.xy() - kick.origin;
+            // apply the force of the kick along the normalized vector of the kicks direction
             let kick_force = kick_direction.normalize_or_zero() * kick.force;
 
+            // add the force of the kick to the rock
             velocity.linvel += kick_force;
         }
     }
@@ -392,6 +418,6 @@ fn move_camera(
 ) {
     let mut camera_transform = camera_query.single_mut();
     let player_transform = player_query.single();
-    // Set the cameras x position to match the player
+    // Set the cameras position to match the player
     camera_transform.translation = player_transform.translation;
 }
