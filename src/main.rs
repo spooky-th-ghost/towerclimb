@@ -5,7 +5,7 @@ use bevy_rapier2d::{na::distance_squared, prelude::*};
 fn main() {
     App::new()
         // Add the default plugins, basically you will do this for 100% of bevy projects
-        .add_plugins(DefaultPlugins)
+        .add_plugins(DefaultPlugins.set(ImagePlugin::default_nearest()))
         // Add our physics plugin
         .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
         // Add a debug plugin that renders our physics colliders
@@ -43,13 +43,25 @@ fn main() {
 pub struct PlayerData {
     pub player_entity: Entity,
     pub rock_entity: Entity,
+    pub terrain_collision_groups: CollisionGroups,
+    pub player_collision_groups: CollisionGroups,
+    pub rock_collision_groups: CollisionGroups,
 }
 
 impl PlayerData {
-    pub fn new(player_entity: Entity, rock_entity: Entity) -> Self {
+    pub fn new(
+        player_entity: Entity,
+        rock_entity: Entity,
+        terrain_collision_groups: CollisionGroups,
+        player_collision_groups: CollisionGroups,
+        rock_collision_groups: CollisionGroups,
+    ) -> Self {
         PlayerData {
             player_entity,
             rock_entity,
+            terrain_collision_groups,
+            player_collision_groups,
+            rock_collision_groups,
         }
     }
 }
@@ -166,14 +178,20 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     // 1, [0,2]
     //
 
-    let terrain_group = Group::GROUP_1;
-    let terrain_filter = Group::GROUP_1 | Group::GROUP_2 | Group::GROUP_3;
+    let terrain_groups = CollisionGroups::new(
+        Group::from_bits_truncate(0b0001),
+        Group::from_bits_truncate(0b0111),
+    );
 
-    let player_group = Group::GROUP_2;
-    let player_filter = Group::GROUP_1 | Group::GROUP_3;
+    let player_groups = CollisionGroups::new(
+        Group::from_bits_truncate(0b0010),
+        Group::from_bits_truncate(0b0101),
+    );
 
-    let rock_group = Group::GROUP_3;
-    let rock_filter = Group::GROUP_1 | Group::GROUP_2;
+    let rock_groups = CollisionGroups::new(
+        Group::from_bits_truncate(0b0100),
+        Group::from_bits_truncate(0b0111),
+    );
 
     // Instead of copy pasting the platform spawn a bunch we just use a for loop here
     for i in 0..50 {
@@ -193,7 +211,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
                 ),
                 ..default()
             },
-            CollisionGroups::new(terrain_group, terrain_filter),
+            terrain_groups,
             // Give the block a collider so that it can be stood on
             Collider::cuboid(50.0, 50.0),
             // Give the block a fixed rigid body, meaning it won't move but can be collided with
@@ -220,7 +238,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         Collider::cuboid(250.0, 50.0),
         // Give the block a fixed rigid body, meaning it won't move but can be collided with
         RigidBody::Fixed,
-        CollisionGroups::new(terrain_group, terrain_filter),
+        terrain_groups,
         Name::from("Ramp"),
     ));
 
@@ -240,21 +258,30 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             Player,
             // Give the player a rigid body that can be moved
             RigidBody::Dynamic,
+            // Give the player a capsule shaped collider
             Collider::capsule_y(30.0, 25.0),
+            // Give the player a velocity component so that it can be moved by the physics system
             Velocity::default(),
+            // Make it so that the player can not be rotated by physics interactions (so it doesn't
+            // fall over while moveing)
             LockedAxes::ROTATION_LOCKED,
+            // Give the player a jump component so that he can jump
             Jump::new(550.0),
+            // Give the player a kick component so that he can kick
             Kick::new(1000.0),
+            // Give the player a ground sensor so that it can detect that it's on the ground
             GroundSensor::default(),
-            CollisionGroups::new(player_group, player_filter),
+            player_groups,
             Name::from("Player"),
         ))
         .id();
 
-    let joint = RopeJointBuilder::new()
+    let chain = RopeJointBuilder::new()
         .local_anchor1(Vec2::default())
         .local_anchor2(Vec2::default())
-        .limits([0.0, 200.0]);
+        .set_motor(50.0, 10.0, 10000.0, 1.0)
+        .limits([0.0, 200.0])
+        .build();
 
     let rock_entity = commands
         .spawn((
@@ -271,13 +298,19 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             RigidBody::Dynamic,
             Collider::ball(75.0),
             Velocity::default(),
-            ImpulseJoint::new(player_entity, joint),
-            CollisionGroups::new(rock_group, rock_filter),
+            ImpulseJoint::new(player_entity, chain),
+            rock_groups,
             Name::from("Rock"),
         ))
         .id();
 
-    commands.insert_resource(PlayerData::new(player_entity, rock_entity));
+    commands.insert_resource(PlayerData::new(
+        player_entity,
+        rock_entity,
+        terrain_groups,
+        player_groups,
+        rock_groups,
+    ));
 }
 
 fn move_player(
@@ -354,30 +387,26 @@ fn kick(
         // Where our raycast starts from
         let origin = transform.translation.xy();
         // How far the raycast travels
-        let distance = 1000.0;
+        let distance = 100.0;
         // Collision group stuff
-        let collision_groups = CollisionGroups {
-            memberships: Group::GROUP_2,
-            filters: Group::GROUP_3,
-        };
+        let collision_groups = CollisionGroups::new(
+            Group::from_bits_truncate(0b0100),
+            Group::from_bits_truncate(0b0100),
+        );
         let filter = QueryFilter {
             groups: Some(collision_groups),
             ..default()
         };
 
-        // Send one ray to the right
-        if rapier_context
-            .cast_ray(origin, Vec2::X, distance, true, QueryFilter::default())
+        // if the rock is on our right or left side and we press e
+        if (rapier_context
+            .cast_ray(origin, Vec2::X, distance, true, filter)
             .is_some()
-            // Send another ray to the left
-            && rapier_context
-                .cast_ray(origin, Vec2::NEG_X, distance, true, QueryFilter::default())
-                .is_some()
-            // Check if the E key was pressed this frame
+            || rapier_context
+                .cast_ray(origin, Vec2::NEG_X, distance, true, filter)
+                .is_some())
             && input.just_pressed(KeyCode::E)
         {
-            // Send a kick event, with the origin as the players position and the force comes from
-            // the players `Kick` component
             kick_event.send(KickEvent {
                 origin: transform.translation.xy(),
                 force: kick.kick_strength,
