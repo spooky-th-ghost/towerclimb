@@ -8,7 +8,8 @@ pub struct PlayerPlugin;
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_player)
-            .add_systems(Update, (move_player, move_camera));
+            .add_systems(Update, (move_player, move_camera))
+            .insert_resource(PlayerHealth::default());
     }
 }
 
@@ -41,8 +42,14 @@ impl PlayerData {
 
 #[derive(Resource)]
 pub struct PlayerHealth {
-    pub max: f32,
-    pub current: f32,
+    pub max: u8,
+    pub current: u8,
+}
+
+impl Default for PlayerHealth{
+    fn default() -> Self {
+        PlayerHealth{max:3, current:3}
+    }
 }
 
 // A marker component so that we can query the
