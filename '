@@ -5,7 +5,6 @@ use rand::prelude::*;
 use crate::{
     combat::Kick,
     physics::{GroundSensor, Jump},
-    player::{CollisionMap, PlayerData},
 };
 
 pub struct EnemyPlugin;
@@ -13,57 +12,12 @@ pub struct EnemyPlugin;
 impl Plugin for EnemyPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(EnemySpawner::default())
-            .add_systems(Update, (enemy_attack, spawn_enemy, handle_bullets));
+            .add_systems(Update, spawn_enemy);
     }
 }
 
 #[derive(Component)]
-pub struct Bullet {
-    life_timer: Timer,
-}
-
-impl Bullet {
-    pub fn tick(&mut self, delta: std::time::Duration) {
-        self.life_timer.tick(delta);
-    }
-
-    pub fn finished(&self) -> bool {
-        self.life_timer.finished()
-    }
-}
-
-impl Default for Bullet {
-    fn default() -> Self {
-        Bullet {
-            life_timer: Timer::from_seconds(5.0, TimerMode::Once),
-        }
-    }
-}
-
-#[derive(Component)]
-pub struct Enemy {
-    attack_timer: Timer,
-}
-
-impl Enemy {
-    fn new(attack_cooldown: f32) -> Self {
-        Enemy {
-            attack_timer: Timer::from_seconds(attack_cooldown, TimerMode::Repeating),
-        }
-    }
-
-    fn tick(&mut self, delta: std::time::Duration) {
-        self.attack_timer.tick(delta);
-    }
-
-    fn should_attack(&self) -> bool {
-        self.attack_timer.just_finished()
-    }
-
-    fn attack(&mut self) {
-        self.attack_timer.reset();
-    }
-}
+pub struct Enemy;
 
 #[derive(Bundle)]
 pub struct EnemyBundle {
@@ -90,7 +44,7 @@ impl Default for EnemyBundle {
                 },
                 ..default()
             },
-            enemy: Enemy::new(3.0),
+            enemy: Enemy,
             rigidbody: RigidBody::Dynamic,
             // Give the player a capsule shaped collider
             collider: Collider::capsule_y(30.0, 25.0),
@@ -163,7 +117,7 @@ impl Default for EnemySpawner {
         }
     }
 }
-
+// TODO decide spawn location
 fn spawn_enemy(
     mut commands: Commands,
     mut spawner: ResMut<EnemySpawner>,
@@ -187,61 +141,5 @@ fn spawn_enemy(
             enemy_position,
             Color::BLUE,
         ));
-    }
-}
-
-fn enemy_attack(
-    mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    collision_map: Res<CollisionMap>,
-    player_data: Res<PlayerData>,
-    time: Res<Time>,
-    mut query: Query<(&mut Enemy, &Transform), With<Enemy>>,
-) {
-    for (mut enemy, transform) in &mut query {
-        enemy.tick(time.delta());
-
-        if enemy.should_attack() {
-            enemy.attack();
-
-            let player_direction = (player_data.player_position.truncate()
-                - transform.translation.truncate())
-            .normalize_or_zero();
-
-            commands.spawn((
-                SpriteBundle {
-                    texture: asset_server.load("rock.png"),
-                    sprite: Sprite {
-                        custom_size: Some(Vec2::new(25., 25.)),
-                        color: Color::RED,
-                        ..default()
-                    },
-                    transform: Transform::from_translation(transform.translation),
-                    ..default()
-                },
-                Bullet::default(),
-                collision_map.enemy_hitbox_mask,
-                Velocity {
-                    linvel: player_direction * 10000.0 * time.delta_seconds(),
-                    angvel: 0.5,
-                },
-                RigidBody::Dynamic,
-                GravityScale(0.0),
-                Sensor,
-            ));
-        }
-    }
-}
-
-fn handle_bullets(
-    mut commands: Commands,
-    time: Res<Time>,
-    mut query: Query<(Entity, &mut Bullet)>,
-) {
-    for (entity, mut bullet) in &mut query {
-        bullet.tick(time.delta());
-        if bullet.finished() {
-            commands.entity(entity).despawn_recursive();
-        }
     }
 }

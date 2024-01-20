@@ -8,8 +8,9 @@ pub struct PlayerPlugin;
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_player)
-            .add_systems(Update, (move_player, move_camera))
-            .insert_resource(PlayerHealth::default());
+            .add_systems(Update, (move_player, move_camera, track_player_position))
+            .insert_resource(PlayerHealth::default())
+            .insert_resource(CollisionMap::default());
     }
 }
 
@@ -17,25 +18,56 @@ impl Plugin for PlayerPlugin {
 pub struct PlayerData {
     pub player_entity: Entity,
     pub rock_entity: Entity,
-    pub terrain_collision_groups: CollisionGroups,
-    pub player_collision_groups: CollisionGroups,
-    pub rock_collision_groups: CollisionGroups,
+    pub player_position: Vec3,
+    pub rock_position: Vec3,
 }
 
 impl PlayerData {
-    pub fn new(
-        player_entity: Entity,
-        rock_entity: Entity,
-        terrain_collision_groups: CollisionGroups,
-        player_collision_groups: CollisionGroups,
-        rock_collision_groups: CollisionGroups,
-    ) -> Self {
+    pub fn new(player_entity: Entity, rock_entity: Entity) -> Self {
         PlayerData {
             player_entity,
             rock_entity,
-            terrain_collision_groups,
-            player_collision_groups,
-            rock_collision_groups,
+            player_position: Vec3::ZERO,
+            rock_position: Vec3::ZERO,
+        }
+    }
+}
+
+#[derive(Resource)]
+pub struct CollisionMap {
+    pub terrain_mask: CollisionGroups,
+    pub player_mask: CollisionGroups,
+    pub rock_mask: CollisionGroups,
+    pub enemy_mask: CollisionGroups,
+    pub enemy_hitbox_mask: CollisionGroups,
+}
+
+impl Default for CollisionMap {
+    fn default() -> Self {
+        CollisionMap {
+            terrain_mask: CollisionGroups::new(
+                Group::from_bits_truncate(0b0000_0001),
+                Group::from_bits_truncate(0b0000_1111),
+            ),
+            player_mask: CollisionGroups::new(
+                Group::from_bits_truncate(0b0000_0010),
+                Group::from_bits_truncate(0b0001_1111),
+            ),
+
+            rock_mask: CollisionGroups::new(
+                Group::from_bits_truncate(0b0000_0100),
+                Group::from_bits_truncate(0b0001_1111),
+            ),
+
+            enemy_mask: CollisionGroups::new(
+                Group::from_bits_truncate(0b0000_1000),
+                Group::from_bits_truncate(0b0000_1111),
+            ),
+
+            enemy_hitbox_mask: CollisionGroups::new(
+                Group::from_bits_truncate(0b0001_0000),
+                Group::from_bits_truncate(0b0000_0110),
+            ),
         }
     }
 }
@@ -46,9 +78,9 @@ pub struct PlayerHealth {
     pub current: u8,
 }
 
-impl Default for PlayerHealth{
+impl Default for PlayerHealth {
     fn default() -> Self {
-        PlayerHealth{max:3, current:3}
+        PlayerHealth { max: 3, current: 3 }
     }
 }
 
@@ -64,20 +96,35 @@ pub struct Player;
 #[derive(Component)]
 pub struct Rock;
 
-fn spawn_player(mut commands: Commands, asset_server: Res<AssetServer>) {
-    let terrain_groups = CollisionGroups::new(
-        Group::from_bits_truncate(0b0001),
-        Group::from_bits_truncate(0b1111),
-    );
-    let player_groups = CollisionGroups::new(
-        Group::from_bits_truncate(0b0010),
-        Group::from_bits_truncate(0b1111),
-    );
+#[derive(Component)]
+pub struct LifeDisplay;
 
-    let rock_groups = CollisionGroups::new(
-        Group::from_bits_truncate(0b0100),
-        Group::from_bits_truncate(0b1111),
-    );
+fn spawn_player(
+    mut commands: Commands,
+    collision_map: Res<CollisionMap>,
+    asset_server: Res<AssetServer>,
+) {
+    let font = asset_server.load("alexandria.ttf");
+
+    //Spawn our placeholder HUD
+    commands.spawn((
+        TextBundle::from_section(
+            "Life: I I I",
+            TextStyle {
+                font: font.clone(),
+                font_size: 50.0,
+                ..default()
+            },
+        )
+        .with_style(Style {
+            position_type: PositionType::Absolute,
+            top: Val::Px(5.0),
+            left: Val::Px(15.0),
+            ..default()
+        }),
+        Name::from("HUD"),
+        LifeDisplay,
+    ));
     // Spawn our guy
     let player_entity = commands
         .spawn((
@@ -107,7 +154,7 @@ fn spawn_player(mut commands: Commands, asset_server: Res<AssetServer>) {
             Kick::new(1000.0),
             // Give the player a ground sensor so that it can detect that it's on the ground
             GroundSensor::default(),
-            player_groups,
+            collision_map.player_mask,
             Name::from("Player"),
         ))
         .id();
@@ -135,18 +182,12 @@ fn spawn_player(mut commands: Commands, asset_server: Res<AssetServer>) {
             Collider::ball(75.0),
             Velocity::default(),
             ImpulseJoint::new(player_entity, chain),
-            rock_groups,
+            collision_map.rock_mask,
             Name::from("Rock"),
         ))
         .id();
 
-    commands.insert_resource(PlayerData::new(
-        player_entity,
-        rock_entity,
-        terrain_groups,
-        player_groups,
-        rock_groups,
-    ));
+    commands.insert_resource(PlayerData::new(player_entity, rock_entity));
 }
 
 fn move_player(
@@ -189,4 +230,16 @@ fn move_camera(
     let player_transform = player_query.single();
     // Set the cameras position to match the player
     camera_transform.translation = player_transform.translation;
+}
+
+fn track_player_position(
+    mut player_data: ResMut<PlayerData>,
+    query: Query<&Transform, Or<(With<Player>, With<Rock>)>>,
+) {
+    if let Ok(player_transform) = query.get(player_data.player_entity) {
+        player_data.player_position = player_transform.translation;
+    }
+    if let Ok(rock_transform) = query.get(player_data.rock_entity) {
+        player_data.rock_position = rock_transform.translation;
+    }
 }
