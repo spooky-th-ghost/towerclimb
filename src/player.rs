@@ -60,16 +60,16 @@ pub struct Rock;
 fn spawn_player(mut commands: Commands, asset_server: Res<AssetServer>) {
     let terrain_groups = CollisionGroups::new(
         Group::from_bits_truncate(0b0001),
-        Group::from_bits_truncate(0b0111),
+        Group::from_bits_truncate(0b1111),
     );
     let player_groups = CollisionGroups::new(
         Group::from_bits_truncate(0b0010),
-        Group::from_bits_truncate(0b0101),
+        Group::from_bits_truncate(0b1111),
     );
 
     let rock_groups = CollisionGroups::new(
         Group::from_bits_truncate(0b0100),
-        Group::from_bits_truncate(0b0111),
+        Group::from_bits_truncate(0b1111),
     );
     // Spawn our guy
     let player_entity = commands

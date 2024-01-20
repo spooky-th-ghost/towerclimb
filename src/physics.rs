@@ -1,3 +1,4 @@
+use crate::player::Player;
 use bevy::prelude::*;
 use bevy_rapier2d::prelude::*;
 
@@ -75,7 +76,10 @@ fn handle_ground_sensor(
     }
 }
 
-fn jump(input: Res<Input<KeyCode>>, mut query: Query<(&mut Velocity, &GroundSensor, &Jump)>) {
+fn jump(
+    input: Res<Input<KeyCode>>,
+    mut query: Query<(&mut Velocity, &GroundSensor, &Jump), With<Player>>,
+) {
     for (mut velocity, ground_sensor, jumper) in &mut query {
         // If the player is on solid ground and the space key was just pressed
         if input.just_pressed(KeyCode::Space) && ground_sensor.grounded() {
