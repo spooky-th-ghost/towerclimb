@@ -31,6 +31,7 @@ fn main() {
             combat::CombatPlugin,
             physics::PhysicsPlugin,
             player::PlayerPlugin,
+            enemy::EnemyPlugin,
         ))
         .run();
 }
@@ -43,8 +44,8 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     let starting_translation = Vec3::new(-150.0, -120.0, 0.0);
 
     let terrain_groups = CollisionGroups::new(
-        Group::from_bits_truncate(0b0001),
-        Group::from_bits_truncate(0b0111),
+        Group::from_bits_truncate(0b1001),
+        Group::from_bits_truncate(0b1111),
     );
 
     // Instead of copy pasting the platform spawn a bunch we just use a for loop here
